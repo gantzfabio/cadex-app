@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cadex</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    :root {
+      --primary: #2F80FF;
+      --bg: #0B0F1A;
+      --card: #121826;
+    }
+    #map, #detailMap { height: 200px; border-radius: 12px; }
+  </style>
+</head>
+<body class="bg-[var(--bg)] text-white font-sans">
+
+<div id="trackingScreen" class="p-4 max-w-md mx-auto">
+  <h1 class="text-xl font-semibold mb-4">Cadex Tracking</h1>
+
+  <div class="text-center mb-2">
+    <p id="status" class="text-xs text-blue-400 mb-1">● Gravando</p>
+    <p id="statusDetail" class="text-[10px] text-gray-400 mb-1"></p>
+    <p class="text-sm text-gray-400">Tempo</p>
+    <p id="time" class="text-4xl font-bold">00:00:00</p>
+  </div>
+
+  <div class="text-center mb-4">
+    <p class="text-sm text-gray-400">Velocidade</p>
+    <p id="speed" class="text-5xl font-bold">0 km/h</p>
+  </div>
+
+  <div id="map" class="mb-4"></div>
+
+  <div class="grid grid-cols-3 gap-2 mb-6">
+    <div class="bg-[var(--card)] p-3 rounded-xl text-center">
+      <p class="text-xs text-gray-400">Distância</p>
+      <p id="distance">0 km</p>
+    </div>
+  </div>
+
+  <div class="flex justify-center gap-4">
+    <button id="pauseBtn" onclick="togglePause()" class="px-4 py-2 bg-gray-700 rounded">Pausar</button>
+    <button onclick="stop()" class="px-4 py-2 bg-blue-600 rounded">Finalizar</button>
+  </div>
+</div>
+
+<div id="historyScreen" class="p-4 max-w-md mx-auto hidden">
+  <h2 class="text-lg font-semibold mb-4">Histórico</h2>
+  <div id="history" class="space-y-3"></div>
+</div>
+
+<div id="detailScreen" class="p-4 max-w-md mx-auto hidden">
+  <button onclick="backToHistory()" class="mb-4 text-sm text-blue-400">← Voltar</button>
+  <h2 class="text-lg font-semibold mb-4">Detalhe do treino</h2>
+
+  <div id="detailMap" class="mb-4"></div>
+  <div id="emptyState" class="text-center text-gray-400 hidden">Sem dados de rota</div>
+
+  <canvas id="chart" class="mb-4"></canvas>
+
+  <div id="detailStats" class="grid grid-cols-3 gap-2 mb-4"></div>
+  <div id="insights" class="bg-[var(--card)] p-4 rounded-xl text-sm space-y-1"></div>
+</div>
+
+<script>
+mapboxgl.accessToken = 'pk.eyJ1IjoiY2FkZXhhcHAiLCJhIjoiY21ud2x0c20zMWxjNDJzcTNyOTVlYWFveiJ9.8aQwCaslzcYjccpkN00GtA';
+
+let map = new mapboxgl.Map({
+  container: 'map',
+  style: 'mapbox://styles/mapbox/dark-v11',
+  center: [0,0],
+  zoom: 14
+});
+
+let route = { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } };
+
+map.on('load', () => {
+  map.addSource('route', { type: 'geojson', data: route });
+  map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#2F80FF', 'line-width': 4 } });
+});
+
+let startTime = Date.now();
+let path = [];
+let totalDistance = 0;
+let speeds = [];
+let isTracking = true;
+let stationaryTime = 0;
+let lastTimestamp = Date.now();
+let speedBuffer = [];
+
+const AUTO_PAUSE_SPEED = 2;
+const AUTO_PAUSE_DELAY = 5000;
+
+// TIMER
+setInterval(() => {
+  const diff = Date.now() - startTime;
+  const h = String(Math.floor(diff/3600000)).padStart(2,'0');
+  const m = String(Math.floor((diff%3600000)/60000)).padStart(2,'0');
+  const s = String(Math.floor((diff%60000)/1000)).padStart(2,'0');
+  document.getElementById('time').innerText = `${h}:${m}:${s}`;
+},1000);
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI/180;
+  const dLon = (lon2 - lon1) * Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+}
+
+navigator.geolocation.watchPosition((pos) => {
+  const now = Date.now();
+  const delta = now - lastTimestamp;
+  lastTimestamp = now;
+
+  const speedRaw = pos.coords.speed ? pos.coords.speed * 3.6 : 0;
+
+  if (speedRaw < AUTO_PAUSE_SPEED) {
+    stationaryTime += delta;
+    if (stationaryTime > AUTO_PAUSE_DELAY) {
+      isTracking = false;
+      updateStatus('Pausado automaticamente');
+    }
+  } else {
+    if (!isTracking) updateStatus('Retomado automaticamente');
+    isTracking = true;
+    stationaryTime = 0;
+  }
+
+  if (!isTracking) return;
+
+  const { latitude, longitude } = pos.coords;
+
+  if (path.length > 0) {
+    const last = path[path.length - 1];
+    const d = haversine(last.lat, last.lng, latitude, longitude);
+    if (d > 0.003) totalDistance += d;
+  }
+
+  path.push({ lat: latitude, lng: longitude });
+
+  speedBuffer.push(speedRaw);
+  if (speedBuffer.length > 5) speedBuffer.shift();
+
+  const avgSpeed = speedBuffer.reduce((a,b)=>a+b,0) / speedBuffer.length;
+  speeds.push(avgSpeed);
+
+  document.getElementById('distance').innerText = totalDistance.toFixed(2) + ' km';
+  document.getElementById('speed').innerText = avgSpeed.toFixed(1) + ' km/h';
+
+  route.geometry.coordinates.push([longitude, latitude]);
+  const src = map.getSource('route');
+  if (src) src.setData(route);
+  map.setCenter([longitude, latitude]);
+});
+
+function togglePause() {
+  isTracking = !isTracking;
+  updateStatus();
+}
+
+function updateStatus(detail='') {
+  const statusEl = document.getElementById('status');
+  const detailEl = document.getElementById('statusDetail');
+  const btn = document.getElementById('pauseBtn');
+
+  detailEl.innerText = detail;
+
+  if (!isTracking) {
+    statusEl.innerText = '⏸ Pausado';
+    statusEl.classList.replace('text-blue-400','text-yellow-400');
+    btn.innerText = 'Retomar';
+  } else {
+    statusEl.innerText = '● Gravando';
+    statusEl.classList.replace('text-yellow-400','text-blue-400');
+    btn.innerText = 'Pausar';
+  }
+}
+
+function classifyRide(avg, highTime){
+  if (avg > 28 || highTime > 300) return 'INTENSO 🚀';
+  if (avg > 18) return 'MODERADO ⚡';
+  return 'LEVE 🟢';
+}
+
+function stop() {
+  const minDistance = 0.5;
+  const minTime = 2 * 60 * 1000;
+
+  if (totalDistance < minDistance || (Date.now() - startTime) < minTime) {
+    alert('Treino muito curto. Não será salvo.');
+    return;
+  }
+
+  const ride = {
+    date: new Date().toLocaleString(),
+    distance: totalDistance,
+    time: Date.now() - startTime,
+    path: [...path],
+    speeds: [...speeds]
+  };
+
+  let rides = JSON.parse(localStorage.getItem('rides') || '[]');
+  rides.unshift(ride);
+  localStorage.setItem('rides', JSON.stringify(rides));
+
+  document.getElementById('trackingScreen').classList.add('hidden');
+  document.getElementById('historyScreen').classList.remove('hidden');
+
+  renderHistory();
+}
+
+function renderHistory() {
+  const container = document.getElementById('history');
+  const rides = JSON.parse(localStorage.getItem('rides') || '[]');
+
+  container.innerHTML = '';
+
+  rides.forEach((r, i) => {
+    const avg = r.time > 0 ? (r.distance/(r.time/3600000)) : 0;
+    const highTime = (r.speeds||[]).filter(s=>s>avg*1.2).length;
+    const level = classifyRide(avg, highTime);
+
+    const el = document.createElement('div');
+    el.className = 'bg-[var(--card)] p-4 rounded-xl cursor-pointer';
+
+    el.innerHTML = `
+      <div class="text-sm text-gray-400 mb-1">${r.date}</div>
+      <div class="text-xs mb-2">${level}</div>
+      <div class="grid grid-cols-3 text-center">
+        <div><p class="text-xs">Distância</p><p>${r.distance.toFixed(2)} km</p></div>
+        <div><p class="text-xs">Tempo</p><p>${Math.floor(r.time/60000)} min</p></div>
+        <div><p class="text-xs">Velocidade</p><p>${avg.toFixed(1)} km/h</p></div>
+      </div>
+    `;
+
+    el.onclick = () => openDetail(i);
+    container.appendChild(el);
+  });
+}
+
+function openDetail(index) {
+  const rides = JSON.parse(localStorage.getItem('rides') || '[]');
+  const r = rides[index];
+
+  if (!r || !r.path || r.path.length === 0) {
+    document.getElementById('emptyState').classList.remove('hidden');
+  } else {
+    const detailMap = new mapboxgl.Map({
+      container: 'detailMap',
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [r.path[0].lng, r.path[0].lat],
+      zoom: 14
+    });
+
+    detailMap.on('load', () => {
+      detailMap.addSource('route', {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: r.path.map(p => [p.lng, p.lat])
+          }
+        }
+      });
+
+      detailMap.addLayer({
+        id: 'route',
+        type: 'line',
+        source: 'route',
+        paint: { 'line-color': '#2F80FF', 'line-width': 4 }
+      });
+    });
+  }
+
+  const avg = r.time > 0 ? (r.distance/(r.time/3600000)) : 0;
+  const highTime = (r.speeds||[]).filter(s=>s>avg*1.2).length;
+  const level = classifyRide(avg, highTime);
+
+  document.getElementById('detailStats').innerHTML = `
+    <div><p class="text-xs">Distância</p><p>${r.distance.toFixed(2)} km</p></div>
+    <div><p class="text-xs">Tempo</p><p>${Math.floor(r.time/60000)} min</p></div>
+    <div><p class="text-xs">Velocidade</p><p>${avg.toFixed(1)} km/h</p></div>
+  `;
+
+  const maxSpeed = Math.max(...r.speeds);
+
+  document.getElementById('insights').innerHTML = `
+    <div>🏁 Classificação: <strong>${level}</strong></div>
+    <div>🚀 Pico: <strong>${maxSpeed.toFixed(1)} km/h</strong></div>
+    <div>🔥 Alta intensidade: <strong>${Math.floor(highTime/60)} min</strong></div>
+  `;
+
+  document.getElementById('historyScreen').classList.add('hidden');
+  document.getElementById('detailScreen').classList.remove('hidden');
+}
+
+function backToHistory() {
+  document.getElementById('detailScreen').classList.add('hidden');
+  document.getElementById('historyScreen').classList.remove('hidden');
+}
+</script>
+
+</body>
+</html>
