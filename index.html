@@ -4,10 +4,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0B0F1A">
   <title>Cadex</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
-  <link rel="manifest" href="/manifest.json" />
+ <link rel="manifest" href="/manifest.json">
+
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
@@ -80,8 +82,8 @@
     if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
-      .then(() => console.log('SW registrado'))
-      .catch(err => console.log('Erro SW:', err));
+      .then(() => console.log('SW OK'))
+      .catch(err => console.log(err));
   });
 }
     mapboxgl.accessToken = 'pk.eyJ1IjoiY2FkZXhhcHAiLCJhIjoiY21ud2x0c20zMWxjNDJzcTNyOTVlYWFveiJ9.8aQwCaslzcYjccpkN00GtA';
