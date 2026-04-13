@@ -77,6 +77,13 @@
   </div>
 
   <script>
+    if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then(() => console.log('SW registrado'))
+      .catch(err => console.log('Erro SW:', err));
+  });
+}
     mapboxgl.accessToken = 'pk.eyJ1IjoiY2FkZXhhcHAiLCJhIjoiY21ud2x0c20zMWxjNDJzcTNyOTVlYWFveiJ9.8aQwCaslzcYjccpkN00GtA';
 
     let map = new mapboxgl.Map({
